@@ -1,7 +1,7 @@
 use crate::config::CONFIG;
 use crate::errors::ApiError;
-use actix_identity::{CookieIdentityPolicy, IdentityService};
 use argon2rs::argon2i_simple;
+use axum_extra::extract::cookie::{Cookie, Key, PrivateCookieJar};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use uuid::Uuid;
@@ -53,14 +53,40 @@ pub fn hash(password: &str) -> String {
         .collect()
 }
 
-/// Gets the identidy service for injection into an Actix app
-pub fn get_identity_service() -> IdentityService<CookieIdentityPolicy> {
-    IdentityService::new(
-        CookieIdentityPolicy::new(&CONFIG.session_key.as_ref())
-            .name(&CONFIG.session_name)
-            .max_age_time(chrono::Duration::minutes(CONFIG.session_timeout))
-            .secure(CONFIG.session_secure),
-    )
+/// Gets the key used to encrypt/decrypt the private identity cookie.
+///
+/// This is the Axum application state, which makes `PrivateCookieJar`
+/// extractable from any handler.
+pub fn get_identity_key() -> Key {
+    Key::derive_from(&CONFIG.session_key.as_ref())
+}
+
+/// Remember an identity by storing the JWT in a private (encrypted) cookie.
+///
+/// The returned jar must be returned from the handler for the cookie to be set.
+pub fn remember(jar: PrivateCookieJar, jwt: String) -> PrivateCookieJar {
+    let cookie = Cookie::build((CONFIG.session_name.clone(), jwt))
+        .path("/")
+        .secure(CONFIG.session_secure)
+        .http_only(true)
+        .max_age(time::Duration::minutes(CONFIG.session_timeout))
+        .build();
+    jar.add(cookie)
+}
+
+/// Forget an identity by removing the private identity cookie.
+pub fn forget(jar: PrivateCookieJar) -> PrivateCookieJar {
+    let cookie = Cookie::build(CONFIG.session_name.clone())
+        .path("/")
+        .http_only(true)
+        .build();
+    jar.remove(cookie)
+}
+
+/// Pull the JWT out of the private identity cookie, if one was sent.
+pub fn get_identity(jar: &PrivateCookieJar) -> Option<String> {
+    jar.get(&CONFIG.session_name)
+        .map(|cookie| cookie.value().to_string())
 }
 
 #[cfg(test)]

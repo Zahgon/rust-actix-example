@@ -1,6 +1,7 @@
 //! Database-related functions
 use crate::config::{Config, CONFIG};
-use actix_web::web;
+use axum::{Extension, Router};
+use axum_extra::extract::cookie::Key;
 use diesel::{
     mysql::MysqlConnection,
     pg::PgConnection,
@@ -9,8 +10,8 @@ use diesel::{
     Connection,
 };
 
-#[serde(untagged)]
 #[derive(Clone, Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
 #[serde(field_identifier, rename_all = "lowercase")]
 pub enum DatabaseConnection {
     Cockroach,
@@ -71,12 +72,13 @@ where
     Pool::builder().build(manager)
 }
 
-pub fn add_pool(cfg: &mut web::ServiceConfig) {
+/// Add the connection pool to the router so handlers can extract it
+pub fn add_pool(router: Router<Key>) -> Router<Key> {
     let pool = InferPool::init_pool(CONFIG.clone()).expect("Failed to create connection pool");
     match pool {
-        InferPool::Cockroach(cockroach_pool) => cfg.data(cockroach_pool),
-        InferPool::Mysql(mysql_pool) => cfg.data(mysql_pool),
-        InferPool::Postgres(postgres_pool) => cfg.data(postgres_pool),
-        InferPool::Sqlite(sqlite_pool) => cfg.data(sqlite_pool),
-    };
+        InferPool::Cockroach(cockroach_pool) => router.layer(Extension(cockroach_pool)),
+        InferPool::Mysql(mysql_pool) => router.layer(Extension(mysql_pool)),
+        InferPool::Postgres(postgres_pool) => router.layer(Extension(postgres_pool)),
+        InferPool::Sqlite(sqlite_pool) => router.layer(Extension(sqlite_pool)),
+    }
 }

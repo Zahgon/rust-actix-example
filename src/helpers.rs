@@ -1,5 +1,9 @@
 use crate::errors::ApiError;
-use actix_web::{body::Body, web::{HttpResponse, Json}};
+use crate::extractors::Json;
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::Serialize;
 
 /// Helper function to reduce boilerplate of an OK/Json response
@@ -11,8 +15,8 @@ where
 }
 
 /// Helper function to reduce boilerplate of an empty OK response
-pub fn respond_ok() -> Result<HttpResponse, ApiError> {
-    Ok(HttpResponse::Ok().body(Body::Empty))
+pub fn respond_ok() -> Result<Response, ApiError> {
+    Ok(StatusCode::OK.into_response())
 }
 
 #[cfg(test)]
@@ -31,7 +35,7 @@ mod tests {
         };
         let result = respond_json(response.clone());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().into_inner(), response);
+        assert_eq!(result.unwrap().0, response);
     }
 
     #[test]

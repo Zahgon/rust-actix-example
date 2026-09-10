@@ -1,6 +1,6 @@
 use crate::errors::ApiError;
 use crate::helpers::respond_json;
-use actix_web::web::Json;
+use crate::extractors::Json;
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct HealthResponse {
@@ -20,9 +20,9 @@ pub async fn get_health() -> Result<Json<HealthResponse>, ApiError> {
 mod tests {
     use super::*;
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn test_get_health() {
         let response = get_health().await.unwrap();
-        assert_eq!(response.into_inner().status, "ok".to_string());
+        assert_eq!(response.0.status, "ok".to_string());
     }
 }

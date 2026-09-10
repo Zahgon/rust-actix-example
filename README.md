@@ -1,18 +1,18 @@
-# Rust/Actix Example
+# Rust/Axum Example
 
 [![Build Status](https://travis-ci.com/ddimaria/rust-actix-example.svg?branch=master)](https://travis-ci.com/ddimaria/rust-actix-example)
 
-An Actix 2.0 REST server using the Rust language.
+An Axum 0.8 REST server using the Rust language.
 
 ## Motivation
 
-Actix Web is a fast, powerful web framework for building web applications in Rust.
+Axum is a fast, powerful web framework for building web applications in Rust.
 This project aims to create ergonomic abstractions comparable to frameworks in
-other languages while attempting to maintain the performance benefits of Actix.
+other languages while attempting to maintain the performance benefits of Axum.
 
 ## Features
 
-- Actix 2.x HTTP Server
+- Axum 0.8 HTTP Server
 - Multi-Database Support (CockroachDB, Postgres, MySQL, Sqlite)
 - JWT Support
 - Async Caching Layer with a Simple API
@@ -35,10 +35,8 @@ other languages while attempting to maintain the performance benefits of Actix.
 ## Featured Packages
 
 - `Argon2i`: Argon2i Password Hasning
-- `actix-cors`: CORS Support
-- `actix-identity`: User Authentication
-- `actix-redis` and `redis-async`: Async Caching Layer
-- `actix-web`: Actix Web Server
+- `axum`: Axum Web Server
+- `axum-extra`: Private (Encrypted) Cookies for User Authentication
 - `derive_more`: Error Formatting
 - `diesel`: ORM that Operates on Several Databases
 - `dotenv`: Configuration Loader (.env)
@@ -47,7 +45,10 @@ other languages while attempting to maintain the performance benefits of Actix.
 - `kcov`: Coverage Analysis
 - `listenfd`: Listens for Filesystem Changes
 - `rayon`: Parallelize
+- `redis`: Async Caching Layer
 - `r2d2`: Database Connection Pooling
+- `tower-http`: CORS Support, Static File Service and Request Tracing
+- `tracing-subscriber`: Log Output Configured via RUST_LOG
 - `validator`: Validates incoming Json
 
 ## Installation
@@ -119,14 +120,14 @@ to make testing the API straightforward. For example, if we want to test the
 ```rust
   use crate::tests::helpers::tests::assert_get;
 
-  #[test]
+  #[tokio::test]
   async fn test_get_users() {
       assert_get("/api/v1/user").await;
   }
 ```
 
-Using the Actix test server, the request is sent and the response is asserted
-for a successful response:
+Using `tower`'s `oneshot` service call, the request is sent through the Axum
+`Router` and the response is asserted for a successful response:
 
 `assert!(response.status().is_success());`
 
@@ -136,7 +137,7 @@ Similarly, to test a POST route:
 use crate::handlers::user::CreateUserRequest;
 use crate::tests::helpers::tests::assert_post;
 
-#[test]
+#[tokio::test]
 async fn test_create_user() {
     let params = CreateUserRequest {
         first_name: "Satoshi".into(),
@@ -209,7 +210,7 @@ curl -X GET http://127.0.0.1:3000/secure/test.html
 
 ## Application State
 
-A shared, mutable hashmap is automatically added to the server. To invoke this data in a handler, simply add `data: AppState<'_, String>` to the function signature.
+A shared, mutable hashmap is automatically added to the server. To invoke this data in a handler, simply add `Extension(data): Extension<AppState<'static, String>>` to the function signature.
 
 ### Helper Functions
 
@@ -222,7 +223,7 @@ Example:
 ```rust
 use create::state::get;
 
-pub async fn handle(data: AppState<'_, String>) -> impl Responder {
+pub async fn handle(Extension(data): Extension<AppState<'static, String>>) -> impl IntoResponse {
   let key = "SOME_KEY";
   let value = get(data, key);
   assert_eq!(value, Some("123".to_string()));
@@ -238,7 +239,7 @@ Example:
 ```rust
 use create::state::set;
 
-pub async fn handle(data: AppState<'_, String>) -> impl Responder {
+pub async fn handle(Extension(data): Extension<AppState<'static, String>>) -> impl IntoResponse {
   let key = "SOME_KEY";
   let value = set(data, key, "123".into());
   assert_eq!(value, None)); // if this is an insert
@@ -255,7 +256,7 @@ Example:
 ```rust
 use create::state::get;
 
-pub async fn handle(data: AppState<'_, String>) -> impl Responder {
+pub async fn handle(Extension(data): Extension<AppState<'static, String>>) -> impl IntoResponse {
   let key = "SOME_KEY";
   let value = delete(data, key);
   assert_eq!(value, None);
@@ -265,7 +266,7 @@ pub async fn handle(data: AppState<'_, String>) -> impl Responder {
 ## Application Cache
 
 Asynchronous access to redis is automatically added to the server if a value is provided for the `REDIS_URL` environment variable.
-To invoke this data in a handler, simply add `cache: Cache` to the function signature.
+To invoke this data in a handler, simply add `Extension(cache): Extension<Cache>` to the function signature.
 
 ### Helper Functions
 
@@ -278,7 +279,7 @@ Example:
 ```rust
 use crate::cache::{get, Cache};
 
-pub async fn handle(cache: Cache) -> impl Responder {
+pub async fn handle(Extension(cache): Extension<Cache>) -> impl IntoResponse {
   let key = "SOME_KEY";
   let value = get(cache, key).await?;
   assert_eq!(value, "123");
@@ -294,7 +295,7 @@ Example:
 ```rust
 use crate::cache::{set, Cache};
 
-pub async fn handle(cache: Cache) -> impl Responder {
+pub async fn handle(Extension(cache): Extension<Cache>) -> impl IntoResponse {
   let key = "SOME_KEY";
   set(cache, key, "123").await?;
 }
@@ -309,7 +310,7 @@ Example:
 ```rust
 use crate::cache::{delete, Cache};
 
-pub async fn handle(cache: Cache) -> impl Responder {
+pub async fn handle(Extension(cache): Extension<Cache>) -> impl IntoResponse {
   let key = "SOME_KEY";
   delete(cache, key).await?;
 }
@@ -324,10 +325,10 @@ Example:
 
 ```rust
 pub async fn get_user(
-    user_id: Path<Uuid>,
-    pool: Data<PoolType>,
+    Path(user_id): Path<Uuid>,
+    Extension(pool): Extension<PoolType>,
 ) -> Result<Json<UserResponse>, ApiError> {
-    let user = block(move || find(&pool, *user_id)).await?;
+    let user = spawn_blocking(move || find(&pool, user_id)).await??;
     respond_json(user)
 }
 ```
@@ -335,12 +336,9 @@ pub async fn get_user(
 Blocking errors are automatically converted into ApiErrors to keep the api simple:
 
 ```rust
-impl From<BlockingError<ApiError>> for ApiError {
-    fn from(error: BlockingError<ApiError>) -> ApiError {
-        match error {
-            BlockingError::Error(api_error) => api_error,
-            BlockingError::Canceled => ApiError::BlockingError("Thread blocking error".into()),
-        }
+impl From<JoinError> for ApiError {
+    fn from(_error: JoinError) -> ApiError {
+        ApiError::BlockingError("Thread blocking error".into())
     }
 }
 ```

@@ -1,13 +1,15 @@
-use crate::auth::{create_jwt, hash, PrivateClaim};
+use crate::auth::{create_jwt, forget, hash, remember, PrivateClaim};
 use crate::database::PoolType;
 use crate::errors::ApiError;
 use crate::handlers::user::UserResponse;
 use crate::helpers::{respond_json, respond_ok};
 use crate::models::user::find_by_auth;
 use crate::validate::validate;
-use actix_identity::Identity;
-use actix_web::web::{block, Data, HttpResponse, Json};
+use crate::extractors::Json;
+use axum::{response::Response, Extension};
+use axum_extra::extract::cookie::PrivateCookieJar;
 use serde::Serialize;
+use tokio::task::spawn_blocking;
 use validator::Validate;
 
 #[derive(Clone, Debug, Deserialize, Serialize, Validate)]
@@ -25,72 +27,64 @@ pub struct LoginRequest {
 /// Login a user
 /// Create and remember their JWT
 pub async fn login(
-    id: Identity,
-    pool: Data<PoolType>,
-    params: Json<LoginRequest>,
-) -> Result<Json<UserResponse>, ApiError> {
+    jar: PrivateCookieJar,
+    Extension(pool): Extension<PoolType>,
+    Json(params): Json<LoginRequest>,
+) -> Result<(PrivateCookieJar, Json<UserResponse>), ApiError> {
     validate(&params)?;
 
     // Validate that the email + hashed password matches
     let hashed = hash(&params.password);
-    let user = block(move || find_by_auth(&pool, &params.email, &hashed)).await?;
+    let user = spawn_blocking(move || find_by_auth(&pool, &params.email, &hashed)).await??;
 
     // Create a JWT
     let private_claim = PrivateClaim::new(user.id, user.email.clone());
     let jwt = create_jwt(private_claim)?;
 
     // Remember the token
-    id.remember(jwt);
-    respond_json(user.into())
+    Ok((remember(jar, jwt), respond_json(user)?))
 }
 
 /// Logout a user
 /// Forget their user_id
-pub async fn logout(id: Identity) -> Result<HttpResponse, ApiError> {
-    id.forget();
-    respond_ok()
+pub async fn logout(jar: PrivateCookieJar) -> Result<(PrivateCookieJar, Response), ApiError> {
+    Ok((forget(jar), respond_ok()?))
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::auth::get_identity_key;
     use crate::tests::helpers::tests::get_data_pool;
-    use actix_identity::Identity;
-    use actix_web::{test, FromRequest};
+    use axum::http::HeaderMap;
 
-    async fn get_identity() -> Identity {
-        let (request, mut payload) =
-            test::TestRequest::with_header("content-type", "application/json").to_http_parts();
-        let identity = Option::<Identity>::from_request(&request, &mut payload)
-            .await
-            .unwrap()
-            .unwrap();
-        identity
+    fn get_identity() -> PrivateCookieJar {
+        PrivateCookieJar::from_headers(&HeaderMap::new(), get_identity_key())
     }
 
-    async fn login_user() -> Result<Json<UserResponse>, ApiError> {
+    async fn login_user() -> Result<(PrivateCookieJar, Json<UserResponse>), ApiError> {
         let params = LoginRequest {
             email: "satoshi@nakamotoinstitute.org".into(),
             password: "123456".into(),
         };
-        let identity = get_identity().await;
+        let identity = get_identity();
         login(identity, get_data_pool(), Json(params)).await
     }
 
-    async fn logout_user() -> Result<HttpResponse, ApiError> {
-        let identity = get_identity().await;
+    async fn logout_user() -> Result<(PrivateCookieJar, Response), ApiError> {
+        let identity = get_identity();
         logout(identity).await
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_logs_a_user_in() {
         let response = login_user().await;
         assert!(response.is_ok());
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_logs_a_user_out() {
-        login_user().await.unwrap();
+        let _ = login_user().await.unwrap();
         let response = logout_user().await;
         assert!(response.is_ok());
     }

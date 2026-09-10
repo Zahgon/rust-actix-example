@@ -1,68 +1,26 @@
-use crate::auth::{decode_jwt, PrivateClaim};
+use crate::auth::{decode_jwt, get_identity, PrivateClaim};
 use crate::errors::ApiError;
-use actix_identity::RequestIdentity;
-use actix_service::{Service, Transform};
-use actix_web::{
-    dev::{ServiceRequest, ServiceResponse},
-    Error, HttpResponse,
+use axum::{
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::Next,
+    response::{IntoResponse, Response},
 };
-use futures::{Future, future::{ok, Ready}};
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use axum_extra::extract::cookie::{Key, PrivateCookieJar};
 
-pub struct Auth;
+/// Reject requests that do not carry a valid identity JWT.
+///
+/// The login route is always allowed through so that a session can be created.
+pub async fn auth(State(key): State<Key>, req: Request, next: Next) -> Response {
+    let jar = PrivateCookieJar::from_headers(req.headers(), key);
+    let identity = get_identity(&jar).unwrap_or_else(|| "".into());
+    let private_claim: Result<PrivateClaim, ApiError> = decode_jwt(&identity);
+    let is_logged_in = private_claim.is_ok();
+    let unauthorized = !is_logged_in && req.uri().path() != "/api/v1/auth/login";
 
-impl<S, B> Transform<S> for Auth
-where
-    S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
-    S::Future: 'static,
-{
-    type Request = ServiceRequest;
-    type Response = ServiceResponse<B>;
-    type Error = Error;
-    type InitError = ();
-    type Transform = AuthMiddleware<S>;
-    type Future = Ready<Result<Self::Transform, Self::InitError>>;
-
-    fn new_transform(&self, service: S) -> Self::Future {
-        ok(AuthMiddleware { service })
-    }
-}
-pub struct AuthMiddleware<S> {
-    service: S,
-}
-
-impl<S, B> Service for AuthMiddleware<S>
-where
-    S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
-    S::Future: 'static,
-{
-    type Request = ServiceRequest;
-    type Response = ServiceResponse<B>;
-    type Error = Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
-
-    fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {        
-        self.service.poll_ready(cx)
+    if unauthorized {
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    fn call(&mut self, req: ServiceRequest) -> Self::Future {
-        let identity = RequestIdentity::get_identity(&req).unwrap_or("".into());
-        let private_claim: Result<PrivateClaim, ApiError> = decode_jwt(&identity);
-        let is_logged_in = private_claim.is_ok();
-        let unauthorized = !is_logged_in && req.path() != "/api/v1/auth/login";
-
-        if unauthorized {
-            return Box::pin(async move {    
-                Ok(req.into_response(HttpResponse::Unauthorized().finish().into_body()))
-            })
-        }
-
-        let fut = self.service.call(req);
-
-        Box::pin(async move {
-            let res = fut.await?;
-            Ok(res)
-        })
-    }
+    next.run(req).await
 }

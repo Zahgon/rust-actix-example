@@ -3,8 +3,6 @@ extern crate diesel;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
-extern crate redis_async;
-#[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate validator_derive;
@@ -28,7 +26,7 @@ mod state;
 mod tests;
 mod validate;
 
-#[actix_rt::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     server().await
 }

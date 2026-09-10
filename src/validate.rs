@@ -1,11 +1,10 @@
 //! Validation-related functions to work with the validator crate.
 
 use crate::errors::ApiError;
-use actix_web::web::Json;
 use validator::{Validate, ValidationErrors};
 
 /// Validate a struct and collect and return the errors
-pub fn validate<T>(params: &Json<T>) -> Result<(), ApiError>
+pub fn validate<T>(params: &T) -> Result<(), ApiError>
 where
   T: Validate,
 {
@@ -62,7 +61,7 @@ mod tests {
   #[test]
   fn it_validates() {
     let request = get_test_request();
-    let response = validate(&Json(request)).unwrap_err();
+    let response = validate(&request).unwrap_err();
     let expected_error = ApiError::ValidationError(vec![
       "first_name is required and must be at least 3 characters".to_string(),
     ]);

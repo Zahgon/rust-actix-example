@@ -3,9 +3,11 @@ use crate::errors::ApiError;
 use crate::helpers::{respond_json, respond_ok};
 use crate::models::user::{create, delete, find, get_all, update, NewUser, UpdateUser, User};
 use crate::validate::validate;
-use actix_web::web::{block, Data, HttpResponse, Json, Path};
+use crate::extractors::{Json, Path};
+use axum::{response::Response, Extension};
 use rayon::prelude::*;
 use serde::Serialize;
+use tokio::task::spawn_blocking;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -64,23 +66,25 @@ pub struct UpdateUserRequest {
 
 /// Get a user
 pub async fn get_user(
-    user_id: Path<Uuid>,
-    pool: Data<PoolType>,
+    Path(user_id): Path<Uuid>,
+    Extension(pool): Extension<PoolType>,
 ) -> Result<Json<UserResponse>, ApiError> {
-    let user = block(move || find(&pool, *user_id)).await?;
+    let user = spawn_blocking(move || find(&pool, user_id)).await??;
     respond_json(user)
 }
 
 /// Get all users
-pub async fn get_users(pool: Data<PoolType>) -> Result<Json<UsersResponse>, ApiError> {
-    let users = block(move || get_all(&pool)).await?;
+pub async fn get_users(
+    Extension(pool): Extension<PoolType>,
+) -> Result<Json<UsersResponse>, ApiError> {
+    let users = spawn_blocking(move || get_all(&pool)).await??;
     respond_json(users)
 }
 
 /// Create a user
 pub async fn create_user(
-    pool: Data<PoolType>,
-    params: Json<CreateUserRequest>,
+    Extension(pool): Extension<PoolType>,
+    Json(params): Json<CreateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
     validate(&params)?;
 
@@ -97,15 +101,15 @@ pub async fn create_user(
         updated_by: user_id.to_string(),
     }
     .into();
-    let user = block(move || create(&pool, &new_user)).await?;
-    respond_json(user.into())
+    let user = spawn_blocking(move || create(&pool, &new_user)).await??;
+    respond_json(user)
 }
 
 /// Update a user
 pub async fn update_user(
-    user_id: Path<Uuid>,
-    pool: Data<PoolType>,
-    params: Json<UpdateUserRequest>,
+    Path(user_id): Path<Uuid>,
+    Extension(pool): Extension<PoolType>,
+    Json(params): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
     validate(&params)?;
 
@@ -118,16 +122,16 @@ pub async fn update_user(
         email: params.email.to_string(),
         updated_by: user_id.to_string(),
     };
-    let user = block(move || update(&pool, &update_user)).await?;
-    respond_json(user.into())
+    let user = spawn_blocking(move || update(&pool, &update_user)).await??;
+    respond_json(user)
 }
 
 /// Delete a user
 pub async fn delete_user(
-    user_id: Path<Uuid>,
-    pool: Data<PoolType>,
-) -> Result<HttpResponse, ApiError> {
-    block(move || delete(&pool, *user_id)).await?;
+    Path(user_id): Path<Uuid>,
+    Extension(pool): Extension<PoolType>,
+) -> Result<Response, ApiError> {
+    spawn_blocking(move || delete(&pool, user_id)).await??;
     respond_ok()
 }
 
@@ -163,68 +167,66 @@ pub mod tests {
         get_all_users().0[0].id
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_gets_a_user() {
         let first_user = &get_all_users().0[0];
-        let user_id: Path<Uuid> = get_first_users_id().into();
-        let response = get_user(user_id, get_data_pool()).await.unwrap();
-        assert_eq!(response.into_inner(), *first_user);
+        let user_id = get_first_users_id();
+        let response = get_user(Path(user_id), get_data_pool()).await.unwrap();
+        assert_eq!(response.0, *first_user);
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_doesnt_find_a_user() {
         let uuid = Uuid::new_v4();
-        let user_id: Path<Uuid> = uuid.into();
-        let response = get_user(user_id, get_data_pool()).await;
+        let response = get_user(Path(uuid), get_data_pool()).await;
         let expected_error = ApiError::NotFound(format!("User {} not found", uuid.to_string()));
         assert!(response.is_err());
         assert_eq!(response.unwrap_err(), expected_error);
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_gets_all_users() {
         let response = get_users(get_data_pool()).await;
         assert!(response.is_ok());
-        assert_eq!(response.unwrap().into_inner().0[0], get_all_users().0[0]);
+        assert_eq!(response.unwrap().0 .0[0], get_all_users().0[0]);
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_creates_a_user() {
-        let params = Json(CreateUserRequest {
+        let params = CreateUserRequest {
             first_name: "Satoshi".into(),
             last_name: "Nakamoto".into(),
             email: "satoshi@nakamotoinstitute.org".into(),
             password: "123456".into(),
-        });
+        };
         let response = create_user(get_data_pool(), Json(params.clone()))
             .await
             .unwrap();
-        assert_eq!(response.into_inner().first_name, params.first_name);
+        assert_eq!(response.0.first_name, params.first_name);
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_updates_a_user() {
         let first_user = &get_all_users().0[0];
-        let user_id: Path<Uuid> = get_first_users_id().into();
-        let params = Json(UpdateUserRequest {
+        let user_id = get_first_users_id();
+        let params = UpdateUserRequest {
             first_name: first_user.first_name.clone(),
             last_name: first_user.last_name.clone(),
             email: first_user.email.clone(),
-        });
-        let response = update_user(user_id, get_data_pool(), Json(params.clone()))
+        };
+        let response = update_user(Path(user_id), get_data_pool(), Json(params.clone()))
             .await
             .unwrap();
-        assert_eq!(response.into_inner().first_name, params.first_name);
+        assert_eq!(response.0.first_name, params.first_name);
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_deletes_a_user() {
         let created = model_create_user();
         let user_id = created.unwrap().id;
-        let user_id_path: Path<Uuid> = user_id.into();
         let user = find(&get_pool(), user_id);
         assert!(user.is_ok());
-        delete_user(user_id_path, get_data_pool()).await.unwrap();
+        delete_user(Path(user_id), get_data_pool()).await.unwrap();
         let user = find(&get_pool(), user_id);
         assert!(user.is_err());
     }

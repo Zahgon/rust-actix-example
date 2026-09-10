@@ -5,7 +5,7 @@ mod tests {
 
     const PATH: &str = "/api/v1/auth";
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_logs_a_user_in() {
         let params = LoginRequest {
             email: "satoshi@nakamotoinstitute.org".into(),
@@ -15,7 +15,7 @@ mod tests {
         assert_post(&url, params).await;
     }
 
-    #[actix_rt::test]
+    #[tokio::test]
     async fn it_logs_a_user_out() {
         let url = format!("{}/logout", PATH);
         assert_get(&url).await;

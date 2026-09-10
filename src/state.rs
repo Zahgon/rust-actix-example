@@ -1,16 +1,15 @@
-use actix_web::web::Data;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // State is just a hashmap
 pub type State<'a, T> = HashMap<&'a str, T>;
-pub type AppState<'a, T> = Data<Mutex<State<'a, T>>>;
+pub type AppState<'a, T> = Arc<Mutex<State<'a, T>>>;
 
 /// Create a new state instance and wrap in a mutex.
-/// Further wrap into an Actix Data instance.
+/// Further wrap into an Arc so it can be shared as an Axum Extension.
 pub fn new_state<'a, T>() -> AppState<'a, T> {
     let state = State::<T>::new();
-    Data::new(Mutex::new(state))
+    Arc::new(Mutex::new(state))
 }
 
 /// Sets an entry in the application state by key.

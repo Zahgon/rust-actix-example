@@ -1,99 +1,96 @@
 #[cfg(test)]
 pub mod tests {
-    use crate::auth::get_identity_service;
+    use crate::auth::get_identity_key;
     use crate::cache::add_cache;
     use crate::config::CONFIG;
     use crate::database::{add_pool, init_pool, Pool};
     use crate::handlers::auth::LoginRequest;
     use crate::routes::routes;
     use crate::state::{new_state, AppState};
-    use actix_web::dev::ServiceResponse;
-    use actix_web::{test, web::Data, App};
+    use axum::body::Body;
+    use axum::http::{header, Request, Response};
+    use axum::{Extension, Router};
     use diesel::mysql::MysqlConnection;
     use serde::Serialize;
+    use tower::ServiceExt;
+
+    /// Builds the application under test, wired up exactly like the server
+    pub async fn app() -> Router {
+        add_cache(add_pool(routes().layer(Extension(app_state()))))
+            .await
+            .with_state(get_identity_key())
+    }
+
+    /// Pull the `name=value` pair out of a response's Set-Cookie header
+    fn session_cookie(response: &Response<Body>) -> String {
+        response
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("No session cookie was set")
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned()
+    }
 
     /// Helper for HTTP GET integration tests
-    pub async fn test_get(route: &str) -> ServiceResponse {
+    pub async fn test_get(route: &str) -> Response<Body> {
         let login_request = LoginRequest {
             email: "satoshi@nakamotoinstitute.org".into(),
             password: "123456".into(),
         };
 
-        let mut app = test::init_service(
-            App::new()
-                .configure(add_cache)
-                .app_data(app_state())
-                .wrap(get_identity_service())
-                .configure(add_pool)
-                .configure(routes),
-        )
-        .await;
+        let app = app().await;
 
-        let response = test::call_service(
-            &mut app,
-            test::TestRequest::post()
-                .set_json(&login_request)
-                .uri("/api/v1/auth/login")
-                .to_request(),
-        )
-        .await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&login_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-        let cookie = response.response().cookies().next().unwrap().to_owned();
-        test::call_service(
-            &mut app,
-            test::TestRequest::get()
-                .cookie(cookie.clone())
-                .uri(route)
-                .to_request(),
+        let cookie = session_cookie(&response);
+        app.oneshot(
+            Request::get(route)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
         )
         .await
+        .unwrap()
     }
 
     /// Helper for HTTP POST integration tests
-    pub async fn test_post<T: Serialize>(route: &str, params: T) -> ServiceResponse {
-        let mut app = test::init_service(
-            App::new()
-                .configure(add_cache)
-                .app_data(app_state())
-                .wrap(get_identity_service())
-                .configure(add_pool)
-                .configure(routes),
-        )
-        .await;
+    pub async fn test_post<T: Serialize>(route: &str, params: T) -> Response<Body> {
+        let app = app().await;
         let login = login().await;
-        let cookie = login.response().cookies().next().unwrap().to_owned();
-        test::call_service(
-            &mut app,
-            test::TestRequest::post()
-                .set_json(&params)
-                .cookie(cookie.clone())
-                .uri(route)
-                .to_request(),
+        let cookie = session_cookie(&login);
+        app.oneshot(
+            Request::post(route)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(serde_json::to_vec(&params).unwrap()))
+                .unwrap(),
         )
         .await
+        .unwrap()
     }
 
-    /// Helper to login for tests
-    // pub fn login_request() -> Request {
-    //     let login_request = LoginRequest {
-    //         email: "satoshi@nakamotoinstitute.org".into(),
-    //         password: "123456".into(),
-    //     };
-    //     test::TestRequest::post()
-    //         .set_json(&login_request)
-    //         .uri("/api/v1/auth/login")
-    //         .to_request()
-    // }
-
     /// Assert that a route is successful for HTTP GET requests
-    pub async fn assert_get(route: &str) -> ServiceResponse {
+    pub async fn assert_get(route: &str) -> Response<Body> {
         let response = test_get(route).await;
         assert!(response.status().is_success());
         response
     }
 
     /// Assert that a route is successful for HTTP POST requests
-    pub async fn assert_post<T: Serialize>(route: &str, params: T) -> ServiceResponse {
+    pub async fn assert_post<T: Serialize>(route: &str, params: T) -> Response<Body> {
         let response = test_post(route, params).await;
         assert!(response.status().is_success());
         response
@@ -104,32 +101,27 @@ pub mod tests {
         init_pool::<MysqlConnection>(CONFIG.clone()).unwrap()
     }
 
-    /// Returns a r2d2 Pooled Connection wrappedn in Actix Application Data
-    pub fn get_data_pool() -> Data<Pool<MysqlConnection>> {
-        Data::new(get_pool())
+    /// Returns a r2d2 Pooled Connection wrapped in an Axum Extension
+    pub fn get_data_pool() -> Extension<Pool<MysqlConnection>> {
+        Extension(get_pool())
     }
 
-    /// Login to routes  
-    pub async fn login() -> ServiceResponse {
+    /// Login to routes
+    pub async fn login() -> Response<Body> {
         let login_request = LoginRequest {
             email: "satoshi@nakamotoinstitute.org".into(),
             password: "123456".into(),
         };
-        let mut app = test::init_service(
-            App::new()
-                .wrap(get_identity_service())
-                .configure(add_pool)
-                .configure(routes),
-        )
-        .await;
-        test::call_service(
-            &mut app,
-            test::TestRequest::post()
-                .set_json(&login_request)
-                .uri("/api/v1/auth/login")
-                .to_request(),
+        let app = add_pool(routes())
+            .with_state(get_identity_key());
+        app.oneshot(
+            Request::post("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&login_request).unwrap()))
+                .unwrap(),
         )
         .await
+        .unwrap()
     }
 
     // Mock applicate state

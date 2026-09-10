@@ -1,13 +1,14 @@
-use actix_web::{
-    error::{BlockingError, ResponseError},
+use axum::{
     http::StatusCode,
-    HttpResponse,
+    response::{IntoResponse, Response},
+    Json,
 };
 use derive_more::Display;
 use diesel::{
     r2d2::PoolError,
     result::{DatabaseErrorKind, Error as DBError},
 };
+use tokio::task::JoinError;
 use uuid::parser::ParseError;
 
 #[derive(Debug, Display, PartialEq)]
@@ -33,23 +34,31 @@ pub struct ErrorResponse {
     errors: Vec<String>,
 }
 
-/// Automatically convert ApiErrors to external Response Errors
-impl ResponseError for ApiError {
-    fn error_response(&self) -> HttpResponse {
+/// Automatically convert ApiErrors to external Responses
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
         match self {
-            ApiError::BadRequest(error) => {
-                HttpResponse::BadRequest().json::<ErrorResponse>(error.into())
-            }
-            ApiError::NotFound(message) => {
-                HttpResponse::NotFound().json::<ErrorResponse>(message.into())
-            }
-            ApiError::ValidationError(errors) => {
-                HttpResponse::UnprocessableEntity().json::<ErrorResponse>(errors.to_vec().into())
-            }
-            ApiError::Unauthorized(error) => {
-                HttpResponse::Unauthorized().json::<ErrorResponse>(error.into())
-            }
-            _ => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
+            ApiError::BadRequest(error) => (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::from(&error)),
+            )
+                .into_response(),
+            ApiError::NotFound(message) => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::from(&message)),
+            )
+                .into_response(),
+            ApiError::ValidationError(errors) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse::from(errors)),
+            )
+                .into_response(),
+            ApiError::Unauthorized(error) => (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse::from(&error)),
+            )
+                .into_response(),
+            _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
 }
@@ -102,12 +111,9 @@ impl From<ParseError> for ApiError {
     }
 }
 
-/// Convert Thread BlockingErrors to ApiErrors
-impl From<BlockingError<ApiError>> for ApiError {
-    fn from(error: BlockingError<ApiError>) -> ApiError {
-        match error {
-            BlockingError::Error(api_error) => api_error,
-            BlockingError::Canceled => ApiError::BlockingError("Thread blocking error".into()),
-        }
+/// Convert Thread JoinErrors (from `tokio::task::spawn_blocking`) to ApiErrors
+impl From<JoinError> for ApiError {
+    fn from(_error: JoinError) -> ApiError {
+        ApiError::BlockingError("Thread blocking error".into())
     }
 }
